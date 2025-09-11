@@ -1,0 +1,12 @@
+streamlit
+pandas
+python-dotenv
+pydantic
+langchain-google-genai
+requests
+google-generativeai
+selenium
+langchain
+fake-useragent
+openpyxl
+supabase
