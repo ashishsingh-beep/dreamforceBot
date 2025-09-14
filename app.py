@@ -7,6 +7,7 @@ from stages.stage_3 import evaluate_lead
 import io
 from supabase import create_client, Client
 from dotenv import load_dotenv
+import concurrent.futures
 
 
 # Set up supabase 
@@ -126,446 +127,162 @@ with tab1:
 with tab2:
     st.title("Scrape Details")
 
-
-    
-    # Data source selection
+    st.markdown("#### 1. Choose your data source for LinkedIn URLs")
     data_source = st.radio(
-        "Choose data source:",
+        "How would you like to provide LinkedIn profile URLs?",
         ("Use LinkedIn URLs from Supabase", "Upload CSV file"),
         key="tab2_data_source"
     )
-    
+
+    urls_per_account = [[] for _ in range(5)]  # Will hold URLs for each account
+
     if data_source == "Use LinkedIn URLs from Supabase":
-
-        # Load Data from Supabase:
         st.header("Load URLs from Database")
-        num_leads = st.number_input("Enter Total leads to load:", min_value=0, value=0, step=1, format="%d")
-        init_range = st.number_input("Enter Starting index", min_value=0, value=0, step=1, format="%d")
-        fin_range = num_leads+init_range - 1
+        num_leads = st.number_input("Total leads to load (across all accounts):", min_value=0, value=0, step=1, format="%d")
+        init_range = st.number_input("Starting index:", min_value=0, value=0, step=1, format="%d")
+        fin_range = num_leads + init_range - 1
 
-        linkedin_urls = fetch_urls_from_all_leads(init_range=init_range, final_range=fin_range)
-        if len(linkedin_urls):
-            st.info(f"Found {len(linkedin_urls)} LinkedIn URLs in Supabase (scraped=False)")
-        if len(linkedin_urls) > 0:
+        all_linkedin_urls = fetch_urls_from_all_leads(init_range=init_range, final_range=fin_range)
+        if all_linkedin_urls:
+            st.success(f"Found {len(all_linkedin_urls)} LinkedIn URLs in Supabase (scraped=False)")
             st.write("Sample URLs:")
-            for i, url in enumerate(linkedin_urls[:5]):  # Show first 5 URLs
+            for i, url in enumerate(all_linkedin_urls[:5]):
                 st.write(f"{i+1}. {url}")
-            if len(linkedin_urls) > 5:
-                st.write(f"... and {len(linkedin_urls) - 5} more")
+            if len(all_linkedin_urls) > 5:
+                st.write(f"... and {len(all_linkedin_urls) - 5} more")
         else:
             st.warning("No LinkedIn URLs found in Supabase with scraped=False")
     else:
         st.write("Upload a CSV with a column containing LinkedIn profile URLs.")
         uploaded_file = st.file_uploader("Upload CSV with LinkedIn URLs", type=["csv"])
+        if uploaded_file is not None:
+            try:
+                df = pd.read_csv(uploaded_file)
+                st.success("CSV loaded successfully.")
+            except Exception as e:
+                st.error(f"Failed to read file: {e}")
+                df = None
+            if df is not None and not df.empty:
+                def _find_url_column(df: pd.DataFrame):
+                    candidates = ["linkedin url", "linkedin urls", "link", "profile_url", "profile url", "url", "profile", "profile link"]
+                    for col in df.columns:
+                        if str(col).strip().lower() in candidates:
+                            return col
+                    for col in df.columns:
+                        low = str(col).strip().lower()
+                        if "linkedin" in low or "link" in low or "url" in low:
+                            return col
+                    return None
+                url_col = _find_url_column(df)
+                if url_col:
+                    all_linkedin_urls = df[url_col].dropna().astype(str).tolist()
+                    st.success(f"Loaded {len(all_linkedin_urls)} URLs from uploaded file.")
+                else:
+                    st.error("Could not find a URL column. Ensure file has a column like 'LinkedIn URL', 'Link', or 'profile_url'.")
+                    all_linkedin_urls = []
+            else:
+                all_linkedin_urls = []
+        else:
+            all_linkedin_urls = []
 
-
-    # Select LinkedIn account from the dropdown (fetched from supabase)
-    st.header("Select Linkedin Account:")
+    # --- Account selection ---
+    st.header("2. Select LinkedIn Accounts (up to 5)")
     all_status_s2 = set()
     response = (
-    supabase.table("Accounts")
-    .select("email_id", "password", "status")
-    .execute()
-)
+        supabase.table("Accounts")
+        .select("email_id", "password", "status")
+        .execute()
+    )
     for leads in response.data:
         all_status_s2.add(leads['status'])
 
-    status_input_s2 = st.selectbox("Fetch linkedin accounts by status (s2)", list(all_status_s2))
+    status_input_s2 = st.selectbox("Filter LinkedIn accounts by status", list(all_status_s2))
     accounts_s2 = fetch_lkd_account(status_input_s2)
+    account_options = list(accounts_s2.keys())
 
-    selected_username_s2 = st.selectbox("Select your LinkedIn username (s2)", list(accounts_s2.keys()))
-    password_s2 = accounts_s2.get(selected_username_s2, None)
-    if password_s2:
-        st.write(f"✅ Password for {selected_username_s2} exists.")
-    else:
-        st.markdown(
-            f"❌ Password for {selected_username_s2} does <span style='color:red;'>NOT</span> exist.",
-            unsafe_allow_html=True
+    enforce_unique = st.checkbox("Require unique accounts for all scrapers", value=True, key="enforce_unique_accounts")
+
+    selected_usernames = []
+    for i in range(5):
+        if enforce_unique:
+            available_options = [acc for acc in account_options if acc not in selected_usernames]
+        else:
+            available_options = account_options
+        selected = st.selectbox(
+            f"Scraper #{i+1} LinkedIn account",
+            available_options,
+            key=f"multi_account_select_{i}"
         )
+        selected_usernames.append(selected)
 
-    # Resume from checkpoint option
-    resume_checkpoint = st.checkbox("Resume from previous checkpoint", value=True, key="resume_checkpoint")
-    
-    # Progress tracking placeholders
-    progress_container = st.container()
-    
-    def _find_url_column(df: pd.DataFrame):
-        candidates = ["linkedin url", "linkedin urls", "link", "profile_url", "profile url", "url", "profile", "profile link"]
-        for col in df.columns:
-            if str(col).strip().lower() in candidates:
-                return col
-        # fuzzy: look for column that contains 'linkedin' or 'link' or 'url'
-        for col in df.columns:
-            low = str(col).strip().lower()
-            if "linkedin" in low or "link" in low or "url" in low:
-                return col
-        return None
+    st.markdown("**Tip:** You can assign different accounts to each scraper. If 'Require unique accounts' is checked, you can't select the same account twice.")
 
-    if st.button("Execute Scrape Details"):
-        urls = []
-        
-        if data_source == "Use LinkedIn URLs from Supabase":
-            if len(linkedin_urls) == 0:
-                st.error("No LinkedIn URLs found in Supabase.")
-            else:
-                urls = linkedin_urls
+    # --- URL splitting logic ---
+    st.header("3. Assign URLs to each account")
+    st.markdown("URLs will be split evenly among the selected accounts. Each account will scrape a unique set of leads.")
+
+    if all_linkedin_urls:
+        # Split URLs as evenly as possible among accounts
+        num_accounts = len([u for u in selected_usernames if u])
+        if num_accounts == 0:
+            st.warning("Please select at least one LinkedIn account before assigning URLs.")
         else:
-            if uploaded_file is None:
-                st.error("Please upload a CSV file.")
-            else:
-                try:
-                    df = pd.read_csv(uploaded_file)
-                except Exception as e:
-                    st.error(f"Failed to read file: {e}")
-                else:
-                    if df.empty:
-                        st.error("Uploaded file is empty.")
-                    else:
-                        url_col = _find_url_column(df)
-                        if not url_col:
-                            st.error("Could not find a URL column. Ensure file has a column like 'LinkedIn URL', 'Link', or 'profile_url'.")
-                        else:
-                            urls = df[url_col].dropna().astype(str).tolist()
-                            if not urls:
-                                st.error("No URLs found in the detected column.")
-
-        if urls:
-            with progress_container:
-                # Progress indicators
-                st.info("🚀 Starting LinkedIn profile scraping...")
-                st.warning("⚠️ **Important**: Do NOT close this browser tab while scraping is in progress. The scraper will save progress automatically.")
-                
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                scraped_count = st.empty()
-                current_profile = st.empty()
-                results_preview = st.empty()
-                
-                # Real-time results container
-                results_container = st.container()
-                
-                try:
-                    # Initialize progress tracking
-                    status_text.text("Initializing scraper...")
-                    
-                    # Import the updated scraping function
-                    from stages.stage_2 import get_linkedin_profile_details
-                    
-                    # Start scraping with progress callback
-                    results = []
-                    total_urls = len(urls)
-                    
-                    # Check for existing progress
-                    import os
-                    import json
-                    progress_file = 'scraping_progress.json'
-                    
-                    if resume_checkpoint and os.path.exists(progress_file):
-                        try:
-                            with open(progress_file, 'r') as f:
-                                saved_progress = json.load(f)
-                            existing_results = saved_progress.get('scraped_data', [])
-                            start_index = saved_progress.get('current_index', 0)
-                            
-                            if existing_results:
-                                st.success(f"📂 Resumed from checkpoint: {len(existing_results)} profiles already scraped")
-                                results.extend(existing_results)
-                        except Exception as e:
-                            st.warning(f"Could not load checkpoint: {e}")
-                    
-                    # Call the scraping function
-                    status_text.text("🔍 Scraping LinkedIn profiles...")
-                    scraped_results = get_linkedin_profile_details(
-                        urls, 
-                        username=selected_username_s2 or None, 
-                        password=password_s2 or None,
-                        resume_from_checkpoint=resume_checkpoint
-                    )
-                    
-                    # Update final results
-                    if scraped_results:
-                        results = scraped_results
-                        
-                        # Update progress indicators
-                        progress_bar.progress(1.0)
-                        status_text.text("✅ Scraping completed successfully!")
-                        scraped_count.success(f"🎉 Successfully scraped {len(results)} profiles")
-                        
-                        # Process and save to database
-                        saved_count = 0
-                        failed_count = 0
-                        
-                        for result in results:
-                            try:
-                                # Insert the data in lead_details table
-                                response = (
-                                    supabase.table("lead_details")
-                                    .insert(result)
-                                    .execute()
-                                )
-                                
-                                # Update the scraped column in all_leads table as True
-                                response = (
-                                    supabase.table("all_leads")
-                                    .update({"scraped": True})
-                                    .eq("lead_id", result['lead_id'])
-                                    .execute()
-                                )
-                                saved_count += 1
-                                
-                            except Exception as e:
-                                failed_count += 1
-                                st.error(f"Error saving profile {result.get('name', 'Unknown')}: {e}")
-                        
-                        # Show database save results
-                        if saved_count > 0:
-                            st.success(f"💾 Saved {saved_count} profiles to database")
-                        if failed_count > 0:
-                            st.warning(f"⚠️ Failed to save {failed_count} profiles to database")
-                        
-                        # Display results
-                        results_df = pd.DataFrame(results)
-                        st.subheader("📊 Scraped Profile Details")
-                        st.dataframe(results_df, use_container_width=True)
-                        
-                        # Download options
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            csv = results_df.to_csv(index=False).encode('utf-8')
-                            st.download_button(
-                                "📄 Download as CSV", 
-                                csv, 
-                                "linkedin_profile_details.csv", 
-                                "text/csv",
-                                use_container_width=True
-                            )
-                        
-                        with col2:
-                            # Excel download
-                            try:
-                                import io
-                                towrite = io.BytesIO()
-                                with pd.ExcelWriter(towrite, engine="openpyxl") as writer:
-                                    results_df.to_excel(writer, index=False, sheet_name="LinkedIn_Profiles")
-                                towrite.seek(0)
-                                st.download_button(
-                                    "📊 Download as Excel", 
-                                    towrite.read(), 
-                                    "linkedin_profile_details.xlsx", 
-                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    use_container_width=True
-                                )
-                            except Exception:
-                                st.info("Excel download unavailable (missing openpyxl)")
-                        
-                        # Clean up progress file
-                        try:
-                            if os.path.exists(progress_file):
-                                os.remove(progress_file)
-                        except:
-                            pass
-                            
-                    else:
-                        status_text.text("❌ No profiles were scraped")
-                        st.warning("⚠️ No profiles were returned from the scraper. This could be due to:")
-                        st.write("- Network issues")
-                        st.write("- LinkedIn blocking/rate limiting")
-                        st.write("- Invalid URLs")
-                        st.write("- Authentication problems")
-                        
-                        # Check if partial results exist
-                        if os.path.exists(progress_file):
-                            try:
-                                with open(progress_file, 'r') as f:
-                                    saved_progress = json.load(f)
-                                partial_results = saved_progress.get('scraped_data', [])
-                                
-                                if partial_results:
-                                    st.info(f"📂 Found {len(partial_results)} partially scraped profiles")
-                                    if st.button("Load Partial Results"):
-                                        results_df = pd.DataFrame(partial_results)
-                                        st.dataframe(results_df)
-                                        csv = results_df.to_csv(index=False).encode('utf-8')
-                                        st.download_button("Download Partial Results", csv, "partial_linkedin_profiles.csv", "text/csv")
-                            except:
-                                pass
-                
-                except KeyboardInterrupt:
-                    st.warning("🛑 Scraping was interrupted by user")
-                    status_text.text("Scraping stopped by user")
-                    
-                except Exception as e:
-                    st.error(f"❌ Error during scraping: {e}")
-                    status_text.text(f"Error: {str(e)}")
-                    
-                    # Check for partial results on error
-                    progress_file = 'scraping_progress.json'
-                    if os.path.exists(progress_file):
-                        try:
-                            with open(progress_file, 'r') as f:
-                                saved_progress = json.load(f)
-                            partial_results = saved_progress.get('scraped_data', [])
-                            
-                            if partial_results:
-                                st.info(f"📂 Recovered {len(partial_results)} profiles from progress file")
-                                results_df = pd.DataFrame(partial_results)
-                                st.dataframe(results_df)
-                                csv = results_df.to_csv(index=False).encode('utf-8')
-                                st.download_button("Download Recovered Results", csv, "recovered_linkedin_profiles.csv", "text/csv")
-                        except:
-                            pass
-    
-    # Show existing progress if available
-    progress_file = 'scraping_progress.json'
-    if os.path.exists(progress_file):
-        try:
-            with open(progress_file, 'r') as f:
-                saved_progress = json.load(f)
-            
-            scraped_count = len(saved_progress.get('scraped_data', []))
-            current_idx = saved_progress.get('current_index', 0)
-            total_count = saved_progress.get('total_urls', 0)
-            
-            if scraped_count > 0:
-                st.info(f"📁 **Progress File Found**: {scraped_count} profiles scraped, stopped at index {current_idx}/{total_count}")
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("🔄 Clear Progress File", key="clear_progress"):
-                        try:
-                            os.remove(progress_file)
-                            st.success("Progress file cleared!")
-                            st.experimental_rerun()
-                        except:
-                            st.error("Failed to clear progress file")
-                
-                with col2:
-                    if st.button("👀 Preview Saved Progress", key="preview_progress"):
-                        partial_results = saved_progress.get('scraped_data', [])
-                        if partial_results:
-                            st.dataframe(pd.DataFrame(partial_results))
-        except:
-            pass
-
-
-
-with tab3:
-    st.header("Find Relevant Leads")
-    
-    st.info(f"Found {len(lead_details_list)} leads in Supabase (sent_to_llm=False)")
-    if len(lead_details_list) > 0:
-        st.write("Sample leads:")
-        for i, lead in enumerate(lead_details_list[:3]):  # Show first 3 leads
-            st.write(f"{i+1}. **{lead.get('name', 'N/A')}** - {lead.get('title', 'N/A')} at {lead.get('company_name', 'N/A')}")
-        if len(lead_details_list) > 3:
-            st.write(f"... and {len(lead_details_list) - 3} more")
+            for idx, url in enumerate(all_linkedin_urls):
+                urls_per_account[idx % num_accounts].append(url)
+            for i, username in enumerate(selected_usernames):
+                st.write(f"**Scraper #{i+1} ({username})** will process {len(urls_per_account[i])} URLs.")
+                if len(urls_per_account[i]) > 0:
+                    st.code("\n".join(urls_per_account[i][:3]) + ("\n..." if len(urls_per_account[i]) > 3 else ""), language="text")
     else:
-        st.warning("No lead details found in Supabase with sent_to_llm=False")
-    
-    gemini_api_key = st.text_input("Gemini API Key", type="password")
+        st.info("No URLs loaded yet.")
 
-    if st.button("Execute Find Relevant Leads"):
-        if not gemini_api_key:
-            st.error("Please provide Gemini API Key.")
-            st.stop()
-            
-        if len(lead_details_list) == 0:
-            st.error("No lead details found in Supabase.")
+    resume_checkpoint = st.checkbox("Resume from previous checkpoint", value=True, key="resume_checkpoint")
+
+    progress_container = st.container()
+
+    if st.button("🚀 Start Scraping with 5 Accounts"):
+        if not all_linkedin_urls:
+            st.error("No LinkedIn URLs loaded. Please load URLs from Supabase or upload a CSV.")
         else:
-            # Convert Supabase data to the format expected by evaluate_lead
-            leads_to_process = []
-            for lead in lead_details_list:
-                lead_info = {
-                    "name": str(lead.get("name", "")).strip(),
-                    "title": str(lead.get("title", "")).strip(),
-                    "location": str(lead.get("location", "")).strip(),
-                    "profile_url": str(lead.get("profile_url", "")).strip(),
-                    "bio": str(lead.get("bio", "")).strip(),
-                    "experience": str(lead.get("experience", "")).strip(),
-                    "lead_id": lead.get("lead_id"),  # Keep lead_id for reference
-                    "company_name": str(lead.get("company_name")).strip(),
-                    "company_page_url": str(lead.get("company_page_url")).strip(),
-                    "sent_to_llm": lead.get('sent_to_llm')
-                }
-                leads_to_process.append(lead_info)
+            with progress_container:
+                st.info("Starting LinkedIn profile scraping with 5 accounts. Please do not close this tab.")
 
-            if leads_to_process:
-                total = len(leads_to_process)
-                progress = st.progress(0)
-                status = st.empty()
-                results_placeholder = st.empty()
-
-                outputs = []
-                for idx, lead_info in enumerate(leads_to_process):
-                    status.text(f"Processing {idx+1}/{total}...")
-
+                def run_scraper(idx, username, password, urls, resume_checkpoint):
+                    if not password:
+                        return (idx, username, None, f"Password not found for {username}. Skipping.")
+                    if not urls:
+                        return (idx, username, None, f"No URLs assigned to {username}. Skipping.")
                     try:
-                        result = evaluate_lead(lead_info, api_key=gemini_api_key)
+                        scraped_results = get_linkedin_profile_details(
+                            urls,
+                            username=username,
+                            password=password,
+                            resume_from_checkpoint=resume_checkpoint
+                        )
+                        return (idx, username, scraped_results, None)
                     except Exception as e:
-                        result = {
-                            "lead_id": lead_info.get("lead_id"),
-                            "name": lead_info.get("name"),
-                            "linkedin_url": lead_info.get("profile_url"),
-                            "score": 0,
-                            "response": f"Error: {e}",
-                            "should_contact": None,
-                            "input_tokens": 0,
-                            "output_tokens": 0
-                        }
+                        return (idx, username, None, f"Error during scraping with {username}: {e}")
 
-                    # Add lead_id if available (from Supabase data)
-                    if "lead_id" in lead_info:
-                        result["lead_id"] = lead_info["lead_id"]
+                # Prepare arguments for each scraper
+                scraper_args = []
+                for idx, username in enumerate(selected_usernames):
+                    password = accounts_s2.get(username, None)
+                    urls = urls_per_account[idx]
+                    scraper_args.append((idx, username, password, urls, resume_checkpoint))
 
-                    outputs.append(result)
+                results = []
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    futures = [executor.submit(run_scraper, *args) for args in scraper_args]
+                    for future in concurrent.futures.as_completed(futures):
+                        results.append(future.result())
 
-                    # update UI
-                    try:
-                        results_placeholder.dataframe(pd.DataFrame(outputs))
-                    except Exception:
-                        pass
-
-                    progress.progress((idx + 1) / total)
-
-                status.text("Completed.")
-
-
-                # Code to update database (supabase)
-
-                for result in outputs:
-                    try:
-                        # Insert the data in lead_details table
-                        response = (
-                        supabase.table("llm_response")
-                        .insert(result)
-                        .execute()
-                    )
-                        # Update the scraped column in lead_details table as True
-                        response = (
-                            supabase.table("lead_details")
-                            .update({"sent_to_llm": True})
-                            .eq("lead_id", result['lead_id'])
-                            .execute()
-                    )
-                    except Exception as e:
-                        print(f"Error inserting data: {e}")
-
-
-                results_df = pd.DataFrame(outputs)
-                st.dataframe(results_df)
-
-                # CSV download
-                csv_bytes = results_df.to_csv(index=False).encode("utf-8")
-                st.download_button("Download Results as CSV", csv_bytes, "evaluated_leads.csv", "text/csv")
-
-                # Excel download
-                try:
-                    towrite = io.BytesIO()
-                    with pd.ExcelWriter(towrite, engine="openpyxl") as writer:
-                        results_df.to_excel(writer, index=False, sheet_name="evaluated_leads")
-                    towrite.seek(0)
-                    st.download_button("Download Results as Excel", towrite.read(), "evaluated_leads.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                except Exception:
-                    # fallback: disable excel button silently if engine missing
-                    pass
+                # Display results
+                for idx, username, scraped_results, error in sorted(results, key=lambda x: x[0]):
+                    st.markdown(f"### Scraper #{idx+1} ({username})")
+                    if error:
+                        st.error(error)
+                    elif scraped_results:
+                        results_df = pd.DataFrame(scraped_results)
+                        st.dataframe(results_df, use_container_width=True)
+                    else:
+                        st.warning(f"No profiles were scraped by {username}")

@@ -430,9 +430,21 @@ def get_linkedin_profile_details(urls: List[str], username: str = None, password
                 profile_data = scrape_profile(driver, url, wait)
                 
                 if profile_data:
+                    # Insert into Supabase lead_details table
+                    try:
+                        supabase.table("lead_details").insert(profile_data).execute()
+                        logger.info(f"Inserted lead {profile_data.get('lead_id')} into lead_details table.")
+                    except Exception as db_exc:
+                        logger.error(f"Error inserting into lead_details: {db_exc}")
+                    # Update 'scraped' column in all_leads table
+                    try:
+                        if profile_data.get('lead_id'):
+                            supabase.table("all_leads").update({"scraped": True}).eq("lead_id", profile_data['lead_id']).execute()
+                            logger.info(f"Updated 'scraped' for lead_id {profile_data['lead_id']} in all_leads table.")
+                    except Exception as db_exc:
+                        logger.error(f"Error updating all_leads: {db_exc}")
                     scraped_data.append(profile_data)
                     logger.info(f"Successfully scraped: {profile_data['name']}")
-                    
                     # Save progress every 5 profiles
                     if len(scraped_data) % 5 == 0:
                         save_progress(scraped_data, i + 1, urls, progress_callback)
