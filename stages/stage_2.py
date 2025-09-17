@@ -27,9 +27,6 @@ supabase: Client = create_client(url, key)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Cookie file path
-PROGRESS_FILE = 'scraping_progress.json'
-
 def save_cookies(driver, path='cookie.json'):
     """Save browser cookies to JSON file"""
     try:
@@ -73,42 +70,6 @@ def cookies_expired(path='cookie.json'):
     except Exception as e:
         logger.error(f"Error checking cookie expiration: {str(e)}")
         return True
-
-def save_progress(data, index, urls, progress_callback=None):
-    """Save current progress to file"""
-    try:
-        progress = {
-            'scraped_data': data,
-            'current_index': index,
-            'total_urls': len(urls),
-            'timestamp': time.time()
-        }
-        with open(PROGRESS_FILE, 'w') as f:
-            json.dump(progress, f, indent=2)
-        logger.info(f"Progress saved: {len(data)} profiles scraped, index {index}")
-        
-        # Call progress callback if provided (for Streamlit updates)
-        if progress_callback:
-            progress_callback({
-                'scraped_count': len(data),
-                'current_index': index,
-                'total_urls': len(urls),
-                'progress_percent': (index / len(urls)) * 100 if urls else 0
-            })
-            
-    except Exception as e:
-        logger.error(f"Error saving progress: {str(e)}")
-
-def load_progress():
-    """Load previous progress from file"""
-    try:
-        if os.path.exists(PROGRESS_FILE):
-            with open(PROGRESS_FILE, 'r') as f:
-                progress = json.load(f)
-            return progress.get('scraped_data', []), progress.get('current_index', 0)
-    except Exception as e:
-        logger.error(f"Error loading progress: {str(e)}")
-    return [], 0
 
 def cleanup_driver(driver):
     """Cleanup function for driver"""
@@ -371,14 +332,6 @@ def get_linkedin_profile_details(urls: List[str], username: str = None, password
     scraped_data = []
     current_index = 0
     
-    # Load previous progress if requested
-    if resume_from_checkpoint:
-        scraped_data, current_index = load_progress()
-        if scraped_data:
-            logger.info(f"Resumed from checkpoint: {len(scraped_data)} profiles already scraped, starting from index {current_index}")
-            if status_callback:
-                status_callback(f"📂 Resumed from checkpoint: {len(scraped_data)} profiles already scraped")
-    
     # Setup driver
     driver = setup_driver()
     wait = WebDriverWait(driver, 10)
@@ -430,21 +383,9 @@ def get_linkedin_profile_details(urls: List[str], username: str = None, password
                 profile_data = scrape_profile(driver, url, wait)
                 
                 if profile_data:
-                    # Insert into Supabase lead_details table
-                    try:
-                        supabase.table("lead_details").insert(profile_data).execute()
-                        logger.info(f"Inserted lead {profile_data.get('lead_id')} into lead_details table.")
-                    except Exception as db_exc:
-                        logger.error(f"Error inserting into lead_details: {db_exc}")
-                    # Update 'scraped' column in all_leads table
-                    try:
-                        if profile_data.get('lead_id'):
-                            supabase.table("all_leads").update({"scraped": True}).eq("lead_id", profile_data['lead_id']).execute()
-                            logger.info(f"Updated 'scraped' for lead_id {profile_data['lead_id']} in all_leads table.")
-                    except Exception as db_exc:
-                        logger.error(f"Error updating all_leads: {db_exc}")
                     scraped_data.append(profile_data)
                     logger.info(f"Successfully scraped: {profile_data['name']}")
+                    
                     # Save progress every 5 profiles
                     if len(scraped_data) % 5 == 0:
                         save_progress(scraped_data, i + 1, urls, progress_callback)
@@ -473,9 +414,6 @@ def get_linkedin_profile_details(urls: List[str], username: str = None, password
             if i < len(urls) - 1:
                 human_like_delay(4, 8, random.uniform(2, 5))
 
-        # Save final progress
-        save_progress(scraped_data, current_index, urls, progress_callback)
-        
         if status_callback:
             status_callback(f"🎉 Scraping completed! Total profiles: {len(scraped_data)}")
 
@@ -488,25 +426,3 @@ def get_linkedin_profile_details(urls: List[str], username: str = None, password
         return scraped_data
     finally:
         cleanup_driver(driver)
-        # Clean up progress file on successful completion
-        if current_index >= len(urls) and os.path.exists(PROGRESS_FILE):
-            try:
-                os.remove(PROGRESS_FILE)
-            except:
-                pass
-
-
-# if __name__ == "__main__":
-#     urls = [
-#         "https://www.linkedin.com/in/ACoAAA4iA5oBf9yWnEw6NypczgDxjeHMkcTbdbk", 
-#         "https://www.linkedin.com/in/ACoAAAeF3ZgB_PQE-30oZy8fcAysZ8tmt2_x904"
-#     ]
-    
-#     result = get_linkedin_profile_details(
-#         urls, 
-#         username="your_email@gmail.com", 
-#         password="your_password",
-#         resume_from_checkpoint=True
-#     )
-    
-#     print(f"\nScraping completed! Total profiles scraped: {len(result)}")

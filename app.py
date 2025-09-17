@@ -49,17 +49,19 @@ def fetch_urls_from_all_leads(init_range, final_range):
 
 
 # Load LinkedIn profile details from lead_details table for Stage 3 from Supabase
-lead_details_list = [] 
-response = (
-    supabase.table("lead_details")
-    .select("lead_id", "name", "title", "location", "profile_url","bio", "skills", "experience", "company_name",  "company_page_url")
-    .eq("sent_to_llm", False)
-    .order("name")
-    # .limit(250)
-    .execute()
-)
-for item in response.data:
-    lead_details_list.append(item)
+def fetch_leads_from_lead_details(limit):
+    lead_details_list = [] 
+    response = (
+        supabase.table("lead_details")
+        .select("lead_id", "name", "title", "location", "profile_url","bio", "skills", "experience", "company_name",  "company_page_url")
+        .eq("sent_to_llm", False)
+        .order("name")
+        .limit(limit)
+        .execute()
+    )
+    for item in response.data:
+        lead_details_list.append(item)
+    return lead_details_list
 
 st.title("Dreamforce Scout App")
 
@@ -127,29 +129,32 @@ with tab1:
 with tab2:
     st.title("Scrape Details")
 
-    st.markdown("#### 1. Choose your data source for LinkedIn URLs")
+    st.markdown("#### Choose your data source for LinkedIn URLs")
     data_source = st.radio(
         "How would you like to provide LinkedIn profile URLs?",
         ("Use LinkedIn URLs from Supabase", "Upload CSV file"),
         key="tab2_data_source"
     )
 
-    urls_per_account = [[] for _ in range(5)]  # Will hold URLs for each account
+    no_of_accounts = st.number_input("Number of LinkedIn accounts to use:", min_value=1, max_value=10, value=1, step=1, format="%d", key="no_of_accounts")
+
+    urls_per_account = [[] for _ in range(no_of_accounts)]  # Will hold URLs for each account
 
     if data_source == "Use LinkedIn URLs from Supabase":
-        st.header("Load URLs from Database")
+        st.header("1. Load URLs from Database")
         num_leads = st.number_input("Total leads to load (across all accounts):", min_value=0, value=0, step=1, format="%d")
-        init_range = st.number_input("Starting index:", min_value=0, value=0, step=1, format="%d")
+        # init_range = st.number_input("Starting index:", min_value=0, value=0, step=1, format="%d")
+        init_range = 0
         fin_range = num_leads + init_range - 1
 
         all_linkedin_urls = fetch_urls_from_all_leads(init_range=init_range, final_range=fin_range)
         if all_linkedin_urls:
             st.success(f"Found {len(all_linkedin_urls)} LinkedIn URLs in Supabase (scraped=False)")
             st.write("Sample URLs:")
-            for i, url in enumerate(all_linkedin_urls[:5]):
+            for i, url in enumerate(all_linkedin_urls[:no_of_accounts]):
                 st.write(f"{i+1}. {url}")
-            if len(all_linkedin_urls) > 5:
-                st.write(f"... and {len(all_linkedin_urls) - 5} more")
+            if len(all_linkedin_urls) > no_of_accounts:
+                st.write(f"... and {len(all_linkedin_urls) - no_of_accounts} more")
         else:
             st.warning("No LinkedIn URLs found in Supabase with scraped=False")
     else:
@@ -186,36 +191,54 @@ with tab2:
             all_linkedin_urls = []
 
     # --- Account selection ---
-    st.header("2. Select LinkedIn Accounts (up to 5)")
-    all_status_s2 = set()
-    response = (
-        supabase.table("Accounts")
-        .select("email_id", "password", "status")
-        .execute()
-    )
-    for leads in response.data:
-        all_status_s2.add(leads['status'])
-
-    status_input_s2 = st.selectbox("Filter LinkedIn accounts by status", list(all_status_s2))
-    accounts_s2 = fetch_lkd_account(status_input_s2)
-    account_options = list(accounts_s2.keys())
+    st.header("2. Select LinkedIn Accounts")
 
     enforce_unique = st.checkbox("Require unique accounts for all scrapers", value=True, key="enforce_unique_accounts")
 
+    status_inputs = []
+    accounts_per_status = []
+    account_options_per_status = []
     selected_usernames = []
-    for i in range(5):
-        if enforce_unique:
-            available_options = [acc for acc in account_options if acc not in selected_usernames]
-        else:
-            available_options = account_options
-        selected = st.selectbox(
-            f"Scraper #{i+1} LinkedIn account",
-            available_options,
-            key=f"multi_account_select_{i}"
-        )
-        selected_usernames.append(selected)
 
-    st.markdown("**Tip:** You can assign different accounts to each scraper. If 'Require unique accounts' is checked, you can't select the same account twice.")
+    for i in range(no_of_accounts):
+        with st.expander(f"Scraper #{i+1} Account Settings", expanded=(i == 0)):
+            # Fetch all statuses for dropdown
+            all_status_s2 = set()
+            response = (
+                supabase.table("Accounts")
+                .select("email_id", "password", "status")
+                .execute()
+            )
+            for leads in response.data:
+                all_status_s2.add(leads['status'])
+            status_list = list(all_status_s2)
+
+            status_input = st.selectbox(
+                f"Filter LinkedIn accounts by status for Scraper #{i+1}",
+                status_list,
+                key=f"status_input_s2_{i}"
+            )
+            status_inputs.append(status_input)
+
+            accounts_s2 = fetch_lkd_account(status_input)
+            account_options = list(accounts_s2.keys())
+            account_options_per_status.append(account_options)
+
+            # Enforce uniqueness if needed
+            if enforce_unique:
+                available_options = [acc for acc in account_options if acc not in selected_usernames]
+            else:
+                available_options = account_options
+
+            selected = st.selectbox(
+                f"Select LinkedIn account for Scraper #{i+1}",
+                available_options,
+                key=f"multi_account_select_{i}"
+            )
+            selected_usernames.append(selected)
+            accounts_per_status.append(accounts_s2)
+
+    st.markdown("**Tip:** You can assign different statuses and accounts to each scraper. If 'Require unique accounts' is checked, you can't select the same account twice.")
 
     # --- URL splitting logic ---
     st.header("3. Assign URLs to each account")
@@ -236,18 +259,14 @@ with tab2:
     else:
         st.info("No URLs loaded yet.")
 
-    resume_checkpoint = st.checkbox("Resume from previous checkpoint", value=True, key="resume_checkpoint")
-
-    progress_container = st.container()
-
-    if st.button("🚀 Start Scraping with 5 Accounts"):
+    if st.button(f"🚀 Start Scraping with {no_of_accounts} Accounts"):
         if not all_linkedin_urls:
             st.error("No LinkedIn URLs loaded. Please load URLs from Supabase or upload a CSV.")
         else:
-            with progress_container:
-                st.info("Starting LinkedIn profile scraping with 5 accounts. Please do not close this tab.")
+            with st.container():
+                st.info(f"Starting LinkedIn profile scraping with {no_of_accounts} accounts. Please do not close this tab.")
 
-                def run_scraper(idx, username, password, urls, resume_checkpoint):
+                def run_scraper(idx, username, password, urls):
                     if not password:
                         return (idx, username, None, f"Password not found for {username}. Skipping.")
                     if not urls:
@@ -256,8 +275,7 @@ with tab2:
                         scraped_results = get_linkedin_profile_details(
                             urls,
                             username=username,
-                            password=password,
-                            resume_from_checkpoint=resume_checkpoint
+                            password=password
                         )
                         return (idx, username, scraped_results, None)
                     except Exception as e:
@@ -266,12 +284,12 @@ with tab2:
                 # Prepare arguments for each scraper
                 scraper_args = []
                 for idx, username in enumerate(selected_usernames):
-                    password = accounts_s2.get(username, None)
+                    password = accounts_per_status[idx].get(username, None)
                     urls = urls_per_account[idx]
-                    scraper_args.append((idx, username, password, urls, resume_checkpoint))
+                    scraper_args.append((idx, username, password, urls))
 
                 results = []
-                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=no_of_accounts) as executor:
                     futures = [executor.submit(run_scraper, *args) for args in scraper_args]
                     for future in concurrent.futures.as_completed(futures):
                         results.append(future.result())
@@ -286,3 +304,144 @@ with tab2:
                         st.dataframe(results_df, use_container_width=True)
                     else:
                         st.warning(f"No profiles were scraped by {username}")
+
+
+
+
+with tab3:
+    st.header("Find Relevant Leads")
+
+    num_leads = st.number_input("Enter number of leads to Search:", key="search_leads", min_value=1)
+    lead_details_list = fetch_leads_from_lead_details(num_leads)
+    
+    st.info(f"Found {len(lead_details_list)} leads in Supabase (sent_to_llm=False)")
+    if len(lead_details_list) > 0:
+        st.write("Sample leads:")
+        for i, lead in enumerate(lead_details_list[:3]):  # Show first 3 leads
+            st.write(f"{i+1}. **{lead.get('name', 'N/A')}** - {lead.get('title', 'N/A')} at {lead.get('company_name', 'N/A')}")
+        if len(lead_details_list) > 3:
+            st.write(f"... and {len(lead_details_list) - 3} more")
+    else:
+        st.warning("No lead details found in Supabase with sent_to_llm=False")
+
+    # --- Gemini Multi-Account Section ---
+    st.subheader("Gemini API Accounts")
+    num_gemini_accounts = st.number_input("Number of Gemini accounts to use:", min_value=1, max_value=10, value=1, step=1, key="num_gemini_accounts")
+    gemini_api_keys = []
+    for i in range(num_gemini_accounts):
+        with st.expander(f"Gemini Account #{i+1} API Key", expanded=(i == 0)):
+            api_key = st.text_input(f"Gemini API Key for Account #{i+1}", type="password", key=f"gemini_api_key_{i}")
+            gemini_api_keys.append(api_key)
+
+    # Distribute leads evenly among accounts
+    leads_per_account = [[] for _ in range(num_gemini_accounts)]
+    for idx, lead in enumerate(lead_details_list):
+        leads_per_account[idx % num_gemini_accounts].append(lead)
+
+    st.markdown("#### Sample of leads assigned to each Gemini account:")
+    for i in range(num_gemini_accounts):
+        with st.expander(f"Gemini Account #{i+1} Sample Leads", expanded=(i == 0)):
+            leads = leads_per_account[i]
+            if leads:
+                for j, lead in enumerate(leads[:3]):  # Show up to 3 sample leads per account
+                    st.write(f"{j+1}. **{lead.get('name', 'N/A')}** - {lead.get('title', 'N/A')} at {lead.get('company_name', 'N/A')}")
+                if len(leads) > 3:
+                    st.write(f"... and {len(leads) - 3} more")
+            else:
+                st.info("No leads assigned to this account.")
+
+    if st.button("Execute Find Relevant Leads (Multi-Account)"):
+        if any(not key for key in gemini_api_keys):
+            st.error("Please provide all Gemini API Keys.")
+            st.stop()
+        if len(lead_details_list) == 0:
+            st.error("No lead details found in Supabase.")
+            st.stop()
+
+        with st.spinner("Processing leads in parallel. Please wait..."):
+            progress = st.progress(0)
+            status = st.empty()
+            results_placeholder = st.empty()
+            outputs = []
+
+            status.text("Started processing leads...")
+
+            def process_leads(leads, api_key, idx):
+                account_outputs = []
+                for lead_info in leads:
+                    try:
+                        result = evaluate_lead(lead_info, api_key=api_key)
+                    except Exception as e:
+                        result = {
+                            "lead_id": lead_info.get("lead_id"),
+                            "name": lead_info.get("name"),
+                            "linkedin_url": lead_info.get("profile_url"),
+                            "score": 0,
+                            "response": f"Error: {e}",
+                            "should_contact": None,
+                            "input_tokens": 0,
+                            "output_tokens": 0
+                        }
+                    if "lead_id" in lead_info:
+                        result["lead_id"] = lead_info["lead_id"]
+                    account_outputs.append(result)
+                return idx, account_outputs
+
+            # Parallel execution
+            with concurrent.futures.ThreadPoolExecutor(max_workers=num_gemini_accounts) as executor:
+                futures = [
+                    executor.submit(process_leads, leads_per_account[i], gemini_api_keys[i], i)
+                    for i in range(num_gemini_accounts)
+                ]
+                total = len(lead_details_list)
+                done = 0
+                all_results = [None] * num_gemini_accounts
+                for future in concurrent.futures.as_completed(futures):
+                    idx, account_results = future.result()
+                    all_results[idx] = account_results
+                    done += len(account_results)
+                    outputs.extend(account_results)
+                    progress.progress(min(done / total, 1.0))
+                    status.text(f"Completed {done} out of {total} leads...")
+                    try:
+                        results_placeholder.dataframe(pd.DataFrame(outputs))
+                    except Exception:
+                        pass
+
+            status.text("Completed.")
+
+        # Code to update database (supabase)
+        for result in outputs:
+            try:
+                # Insert the data in lead_details table
+                response = (
+                    supabase.table("llm_response")
+                    .insert(result)
+                    .execute()
+                )
+                # Update the scraped column in lead_details table as True
+                response = (
+                    supabase.table("lead_details")
+                    .update({"sent_to_llm": True})
+                    .eq("lead_id", result['lead_id'])
+                    .execute()
+                )
+            except Exception as e:
+                print(f"Error inserting data: {e}")
+
+        results_df = pd.DataFrame(outputs)
+        st.dataframe(results_df)
+
+        # CSV download
+        csv_bytes = results_df.to_csv(index=False).encode("utf-8")
+        st.download_button("Download Results as CSV", csv_bytes, "evaluated_leads.csv", "text/csv")
+
+        # Excel download
+        try:
+            towrite = io.BytesIO()
+            with pd.ExcelWriter(towrite, engine="openpyxl") as writer:
+                results_df.to_excel(writer, index=False, sheet_name="evaluated_leads")
+            towrite.seek(0)
+            st.download_button("Download Results as Excel", towrite.read(), "evaluated_leads.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        except Exception:
+            pass

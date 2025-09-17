@@ -13,6 +13,8 @@ from datetime import datetime, timedelta
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import time
+import traceback
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -184,12 +186,19 @@ def scout_leads(time_to_load, username, password, search_url : str = "", keyword
     like_btn_xpath = "//button[@data-reaction-details]"
     admin_xpath = "//div[@class='fie-impression-container']/div[@class='relative']/div[1]/div/div/a[1]"  # The one who posted the post
     leads_xpath = "//a[@rel='noopener noreferrer' and contains(@href, '/in')]"
+    three_dot_xpath = "//button[contains(@aria-label, 'Open control menu for post by')]"
+    copy_post_url_xpath = "//h5[contains(., 'Copy link to post')]"
+    post_url_xpath = "//a[contains(@href, '/posts')]"
+    # leads_name_xpath = "//a[@rel='noopener noreferrer' and contains(@href, '/in')]//div[@class='artdeco-entity-lockup__title ember-view']/span[@aria-hidden='true']"
+    # leads_bio_xpath = "//a[@rel='noopener noreferrer' and contains(@href, '/in')]//div[@class='artdeco-entity-lockup__caption ember-view']"
     cross_btn = "(//button[@aria-label='Dismiss'])[1]"
     show_more_likes_xpath = "(//button[contains(@id,'ember') and contains(@class,'scaffold-finite-scroll__load-button')])[1]"
     input_xpath = "//input[@placeholder='Search']"
-    post_button_xpath = "//button[text()='Posts' and ancestor::li[@class='search-reusables__primary-filter']]"
+    # post_button_xpath = "//button[text()='Posts' and ancestor::li[@class='search-reusables__primary-filter']]"
+    post_button_xpath = "//button[@aria-label='Filter by: Posts']"
 
-    leads_list = set()
+    leads_list = [] #It only contains list of urls
+    leads_data_list = [] #It contains list of dict
 
     try:
         # Initial navigation with delay
@@ -241,10 +250,11 @@ def scout_leads(time_to_load, username, password, search_url : str = "", keyword
             slow_type(search_input, keywords)
             time.sleep(random.uniform(2, 4))
             search_input.send_keys(Keys.RETURN)
-            time.sleep(random.uniform(3, 5))
+            # time.sleep(random.uniform(3, 5))
 
-            posts_btn = wait.until(EC.element_to_be_clickable((By.XPATH, post_button_xpath)))
-            posts_btn.click()
+            # posts_btn = wait.until(EC.element_to_be_clickable((By.XPATH, post_button_xpath)))
+            posts_btn = wait.until(EC.visibility_of_element_located((By.XPATH, post_button_xpath)))
+            driver.execute_script("arguments[0].click();", posts_btn)
             time.sleep(random.uniform(3, 5))
         else:
             driver.get(search_url)
@@ -267,39 +277,70 @@ def scout_leads(time_to_load, username, password, search_url : str = "", keyword
         except Exception as e:
             logger.warning(f"No like buttons found or error occurred: {e}")
 
-        # --- LOOP through all the posts and collect url of admins ---
-        try:
-            admin_elements = wait.until(
-                EC.presence_of_all_elements_located((By.XPATH, admin_xpath))
-            )
-            for admin in admin_elements:
-                try:
-                    admin_url = admin.get_attribute("href")
-                    if admin_url:
-                        leads_list.add(admin_url)
-                        logger.info(f"Found admin: {admin_url}")
-                except Exception as e:
-                    logger.warning(f"Error extracting admin URL: {e}")
 
-        except Exception as e:
-            logger.warning(f"Could not process admin buttons: {e}")
-
-        # --- LOOP through all like buttons ---
         try:
             like_elements = wait.until(
                 EC.presence_of_all_elements_located((By.XPATH, like_btn_xpath))
             )
-            print(f'Total posts found: {len(like_elements)}')
 
+            three_dot_elements = wait.until(
+                EC.presence_of_all_elements_located((By.XPATH, three_dot_xpath))
+            )
+
+            print(f'Total posts found: {len(like_elements)}')
+            print(f'Total three-dot menus found: {len(three_dot_elements)}')
+
+        # --- LOOP through all like buttons ---
             for idx, like_btn in enumerate(like_elements, start=1):
                 try:
+
+                    # Scroll to and click like button to open likes popup
                     driver.execute_script("arguments[0].scrollIntoView(true);", like_btn)
                     time.sleep(random.uniform(2, 4))  # Increased delay
 
                     driver.execute_script("arguments[0].click();", like_btn)
                     logger.info(f"Opened likes popup for post {idx}")
 
-                    time.sleep(random.uniform(3, 5))  # Increased delay
+
+# -------------------------   EXTRACT POST URL    ---------------------------------------------------------------------------------------------------------
+
+                    try:
+                        # Click the three-dot menu
+                        logger.info("Attempting to click three-dot menu to extract post URL...")
+                        if three_dot_elements:
+                            logger.info(f"Found {len(three_dot_elements)} three-dot menu elements.")
+                            driver.execute_script("arguments[0].scrollIntoView(true);", three_dot_elements[idx-1])
+                            time.sleep(random.uniform(2, 4))
+                            driver.execute_script("arguments[0].click();", three_dot_elements[idx-1])
+                        time.sleep(random.uniform(3, 5))  # Increased delay
+                    except Exception as e:
+                        logger.warning(f"Could not click three-dot menu: {e}")
+
+                    try:
+                        logger.info("Attempting to locate 'Copy link to post' button...")
+                        copy_post_url_btn = wait.until(EC.presence_of_element_located((By.XPATH, copy_post_url_xpath)))
+                        time.sleep(random.uniform(2, 4))   
+                        # Click "Copy link to post"
+                        logger.info("Clicking 'Copy link to post' button...")
+                        driver.execute_script("arguments[0].click();", copy_post_url_btn)
+                        time.sleep(random.uniform(2, 4))
+                    except Exception as e:
+                        logger.warning(f"Could not click 'Copy link to post' button: {e}")
+                    
+                    try:
+                        # Grab "View post" link from the popup
+                        logger.info("Locating 'View post' link...")
+                        view_post = wait.until(EC.presence_of_element_located((By.XPATH, "//a[text()='View post']")))
+                        post_url = view_post.get_attribute("href")
+                        logger.info(f"Post URL: {post_url}")
+                        time.sleep(random.uniform(2, 4))
+                    except Exception as e:
+                        logger.warning(f"Could not extract post URL: {e}")
+                        post_url = None
+
+# -------------------------   EXTRACT POST URL ----------------------------------------------------------------------------------------------------------------
+
+
 
                     # Keep clicking "Show more results"
                     click_count = 0
@@ -317,16 +358,51 @@ def scout_leads(time_to_load, username, password, search_url : str = "", keyword
                             logger.info("No more 'Show more results' button found. Breaking loop.")
                             break
 
+
+                        # Extract post URL
+                            # Locate and click the three-dot menu
+                        try:
+                            menu_btn = WebDriverWait(driver, 5).until(
+                                EC.element_to_be_clickable((By.XPATH, three_dot_xpath))
+                            )
+                            driver.execute_script("arguments[0].click();", menu_btn)
+                            time.sleep(random.uniform(2, 4))
+
+                            # Click "Copy link to post"
+                            copy_btn = WebDriverWait(driver, 5).until(
+                                EC.element_to_be_clickable((By.XPATH, "//h5[contains(., 'Copy link to post')]"))
+                            )
+                            driver.execute_script("arguments[0].click();", copy_btn)
+                            time.sleep(random.uniform(2, 4))
+
+                            # Grab "View post" link from the popup
+                            view_post = WebDriverWait(driver, 5).until(
+                                EC.presence_of_element_located((By.XPATH, "//a[text()='View post']"))
+                            )
+                            post_url = view_post.get_attribute("href")
+                            logger.info(f"Post URL: {post_url}")
+
+                        except Exception as e:
+                            logger.warning(f"Could not extract post URL: {e}")
+                            post_url = None
+
                     # Extract leads
                     leads = wait.until(EC.presence_of_all_elements_located((By.XPATH, leads_xpath)))
+                    seen_urls = set()
+
+
                     for lead in leads:
                         try:
                             lead_url = lead.get_attribute("href")
-                            if lead_url and lead_url not in leads_list:
-                                leads_list.add(lead_url)
+                            lead_info = lead.text.strip()
+
+                            if lead_url and lead_url not in seen_urls:
+                                leads_list.append({'linkedin_url': lead_url, 'bio': lead_info, 'post_url': post_url})
+                                seen_urls.add(lead_url)
                                 logger.info(f"Found lead: {lead_url}")
+
                         except Exception as e:
-                            logger.warning(f"Error extracting lead URL: {e}")
+                            logger.warning(f"Error extracting data for lead {lead.get_attribute('href') if lead else 'unknown'}: {e}")
 
                     # Close popup
                     try:
@@ -347,14 +423,16 @@ def scout_leads(time_to_load, username, password, search_url : str = "", keyword
 
         # --- Final list ---
         logger.info(f"Total unique leads collected: {len(leads_list)}")
+
         for lead in leads_list:
-            if '/in/' in lead:
-                lead_arr = lead.split('/')
+            if '/in/' in lead['linkedin_url']:
+                lead_arr = lead['linkedin_url'].split('/')
                 idx = lead_arr.index('in')
                 lead_id = lead_arr[idx+1]
                 if '?' in lead_id:
                     lead_id = lead_id.split('?')[0]
-                lead_data = {"lead_id": lead_id, "linkedin_url": lead, "scraped": False}
+                lead_data = {"lead_id": lead_id, "linkedin_url": lead['linkedin_url'], "scraped": False, "bio": lead['bio'], "post_url": lead['post_url']}
+                leads_data_list.append(lead_data)
                 try:
                     supabase.table("all_leads").insert(lead_data).execute()
                 except Exception as e:
@@ -363,7 +441,7 @@ def scout_leads(time_to_load, username, password, search_url : str = "", keyword
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f'leads_list_{timestamp}.csv'
 
-        leads_df = pd.DataFrame(leads_list, columns=['LinkedIn Profile URL'])
+        leads_df = pd.DataFrame(leads_data_list)
         leads_df.to_csv(filename, index=False)
         print(f"Leads saved to {filename}")
 
@@ -371,6 +449,7 @@ def scout_leads(time_to_load, username, password, search_url : str = "", keyword
 
     except Exception as e:
         logger.error(f"An error occurred during login or scraping: {e}")
+        logger.error(traceback.format_exc())
         return []
     finally:
         time.sleep(random.uniform(5, 8))

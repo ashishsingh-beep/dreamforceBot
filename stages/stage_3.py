@@ -52,10 +52,15 @@ def evaluate_lead(lead_info: dict, api_key) -> dict:
 You are an expert lead qualifier. We (WildnetEdge) as a company offer the following services to our clients:
 WildnetEdge: ```{wildnet_edge_data}```
 
-Your task is to evaluate each lead's potential whether they are a potential buyer of our (wildnetEdge's) salesforce service or whether they are potential seller of salesforce services like us (WildnetEdge). Refer following points to identify if they are a potential buyer:
-1. The lead must be at the position of some authority like Manager, Sr. Manager, Director, Head, VP, C-suites, founder, etc. not at employee level (like Developer, Analyst, etc.). Give extra points and mention explicitly if they are in IT Department but only if they are among mentioned positions. (High weightage)
-2. The COMPANY at which the lead is working MUST not offer IT or software services like WildnetEdge. In other words the industry of their company must not fall under "IT or software service" or any services that are mentioned above within triple backticks i.e. their company should not be our direct competitior or ours. Aditionally and VERY IMPORTANTLY, their company should not be a partner or reseller of Salesforce like us. Note: Your your intelligence and provided context about lead to evaluate what their company does, in case if you can't find out what their company does, just mention it in your response and give the score between 40-60 given 1st point is satisfied i.e. lead is at one of the mentioned position in company. Don't make any assumption (Very High Weightage)
-3. The lead is not from India. Keep the weightage of this factor low. If they are from India, consider their specific circumstances and potential needs, but mention this explicitly in your response. (Low to moderate weightage)
+Your task is to evaluate each lead's potential whether they are a potential buyer of our (wildnetEdge's) salesforce service or whether they are potential seller of salesforce services like us (WildnetEdge). Refer following points to identify if they are a potential buyer and score on that basis:
+Score the lead on a scale of 1-100 based on crieteria 1 and 2 and then multiply with a multiplier based on criteria 3 to get the final score:
+Criteria - 1: The lead must be at the position of some authority like Manager, Sr. Manager, Director, Head, VP, C-suites, founder, etc. not at employee level (like Developer, Analyst, etc.). Give extra points and mention explicitly if they are in IT Department but only if they are among mentioned positions. (High weightage)
+Criteria - 2: The COMPANY at which the lead is working MUST not offer IT or software services like WildnetEdge. In other words the industry of their company must not fall under "IT or software service" or any services that are mentioned above within triple backticks i.e. their company should not be our direct competitior or ours. Aditionally and VERY IMPORTANTLY, their company should not be a partner or reseller of Salesforce like us. Note: Your your intelligence and provided context about lead to evaluate what their company does, in case if you can't find out what their company does, just mention it in your response and give the score between 40-60 given 1st point is satisfied i.e. lead is at one of the mentioned position in company. Don't make any assumption (Very High Weightage)
+Criteria - 3: This criteria is based on lead's location. After scoring based on above two criteria, apply following multiplier to the score:
+- If lead's location is in USA, Canada, UK, Germany, Italy, France, Netherlands, Switzerland, Sweden, Ireland, Australia, Singapore - multiply the score by 1
+- If lead's location is in India, UAE, Saudi Arabia, Israel, Qatar, Egypt - multiply the score by 0.8
+- If lead's location is in any other country - multiply the score by 0.5
+For ex. if lead scores 70 based on first two criteria and is located in USA, final score will be 70*1=70, if lead is located in India, final score will be 70*0.8=56 and if lead is located in any other country, final score will be 70*0.5=35.
 """)
     
     # Create human message with lead info and format instructions
@@ -63,7 +68,7 @@ Your task is to evaluate each lead's potential whether they are a potential buye
 Evaluate this lead for potential:
 {lead_info}
 
-Should we approach this lead? Rate potential 1-100 based on all the 3 factors (Keep the weightage in mind) and explain your reasoning based on how well they match our services. Keep the score criteria strict and give high score only to those who fulfill all the criteria to a good extent.
+Should we approach this lead? Score the leads based on above rule (0-100) and explain your reasoning and lead's location based on how well they match our services. Keep the score criteria strict and give high score only to those who fulfill all the criteria to a good extent.
 
 {format_instructions}
 """)
@@ -79,10 +84,8 @@ Should we approach this lead? Rate potential 1-100 based on all the 3 factors (K
     output_tokens = 0
 
     # # Initialize the client with API key
-    # # client = genai.Client(api_key=api_key)
+    # client = genai.Client(api_key=api_key)
     # genai.configure(api_key="AIzaSyCrbmArh2il2oVeOkpBxHo99hdDRRhaHIQ")
-
-
 
     # # Count input tokens
     # input_token = genai.count_tokens(model="gemini-2.5-flash", contents=[system_msg.content, human_msg.content]).total_token
@@ -107,6 +110,7 @@ Should we approach this lead? Rate potential 1-100 based on all the 3 factors (K
         "lead_id": lead_info.get("lead_id"),
         "name": lead_info.get("name"),
         "linkedin_url": lead_info.get("profile_url"),
+        "location": lead_info.get("location"),
         "score": parsed_output.SCORE,
         "response": parsed_output.RESPONSE,
         "should_contact": parsed_output.SHOULD_CONTACT,
