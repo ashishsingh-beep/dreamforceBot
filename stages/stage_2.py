@@ -65,11 +65,12 @@ def exponential_backoff(attempt):
 
 def check_rate_limit(session_requests):
     """Check if we need to take a longer break"""
+    # Remove long break logic
     # Long break every 10 requests
-    if session_requests % 10 == 0:
-        long_delay = random.uniform(60, 120)
-        logger.info(f"Taking extended break: {long_delay:.2f} seconds")
-        time.sleep(long_delay)
+    # if session_requests % 10 == 0:
+    #     long_delay = random.uniform(60, 120)
+    #     logger.info(f"Taking extended break: {long_delay:.2f} seconds")
+    #     time.sleep(long_delay)
     
     return session_requests + 1
 
