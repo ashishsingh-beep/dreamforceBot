@@ -27,50 +27,6 @@ supabase: Client = create_client(url, key)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def save_cookies(driver, path='cookie.json'):
-    """Save browser cookies to JSON file"""
-    try:
-        with open(path, 'w') as file:
-            json.dump(driver.get_cookies(), file)
-        logger.info("Cookies saved successfully")
-    except Exception as e:
-        logger.error(f"Error saving cookies: {str(e)}")
-
-def load_cookies(driver, path='cookie.json'):
-    """Load cookies from JSON file into browser"""
-    try:
-        with open(path, 'r') as file:
-            cookies = json.load(file)
-        for cookie in cookies:
-            driver.add_cookie(cookie)
-        logger.info("Cookies loaded successfully")
-        return True
-    except Exception as e:
-        logger.error(f"Error loading cookies: {str(e)}")
-        return False
-
-def cookies_expired(path='cookie.json'):
-    """Check if cookies have expired"""
-    if not os.path.exists(path):
-        return True
-    
-    try:
-        with open(path, 'r') as file:
-            cookies = json.load(file)
-        
-        current_time = time.time()
-        for cookie in cookies:
-            if 'expiry' in cookie:
-                if cookie['expiry'] < current_time:
-                    logger.info("Cookies have expired")
-                    return True
-        
-        logger.info("Cookies are still valid")
-        return False
-    except Exception as e:
-        logger.error(f"Error checking cookie expiration: {str(e)}")
-        return True
-
 def cleanup_driver(driver):
     """Cleanup function for driver"""
     if driver:
@@ -135,59 +91,44 @@ def perform_login(driver, username=None, password=None):
 
     if username and password:
         logged_in = False
-        
-        # Try to login with cookies first if they exist and are not expired
-        if os.path.exists('cookie.json') and not cookies_expired():
-            logger.info("Attempting to login with saved cookies...")
-            if load_cookies(driver):
-                driver.refresh()
-                time.sleep(random.uniform(3, 5))
-                
-                if "feed" in driver.current_url.lower() or "home" in driver.current_url.lower():
-                    logger.info("Successfully logged in using cookies!")
-                    logged_in = True
-                else:
-                    logger.info("Cookie login failed, will try with credentials")
-        
-        # If cookie login failed or cookies don't exist/expired, use credentials
-        if not logged_in:
-            logger.info("Logging in with credentials...")
-            if "login" not in driver.current_url.lower():
-                driver.get("https://www.linkedin.com/login")
-                time.sleep(random.uniform(2, 4))
-            
-            user_input = wait.until(EC.presence_of_element_located((By.ID, "username")))
-            pass_input = wait.until(EC.presence_of_element_located((By.ID, "password")))
-            user_input.clear()
-            
-            # Type slowly like human
-            for char in username:
-                user_input.send_keys(char)
-                time.sleep(random.uniform(0.05, 0.15))
-                
-            pass_input.clear()
-            time.sleep(random.uniform(0.5, 1.0))
-            
-            for char in password:
-                pass_input.send_keys(char)
-                time.sleep(random.uniform(0.05, 0.15))
 
-            sign_in_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[@type='submit']")))
-            time.sleep(random.uniform(1, 2))
-            sign_in_btn.click()
+        # Only login with credentials, no cookie logic
+        logger.info("Logging in with credentials...")
+        if "login" not in driver.current_url.lower():
+            driver.get("https://www.linkedin.com/login")
+            time.sleep(random.uniform(2, 4))
+        
+        user_input = wait.until(EC.presence_of_element_located((By.ID, "username")))
+        pass_input = wait.until(EC.presence_of_element_located((By.ID, "password")))
+        user_input.clear()
+        
+        # Type slowly like human
+        for char in username:
+            user_input.send_keys(char)
+            time.sleep(random.uniform(0.05, 0.15))
             
-            time.sleep(random.uniform(3, 5))
-            
-            if "feed" in driver.current_url.lower() or "home" in driver.current_url.lower():
-                save_cookies(driver)
-                logger.info("Login successful! Cookies saved.")
+        pass_input.clear()
+        time.sleep(random.uniform(0.5, 1.0))
+        
+        for char in password:
+            pass_input.send_keys(char)
+            time.sleep(random.uniform(0.05, 0.15))
+
+        sign_in_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[@type='submit']")))
+        time.sleep(random.uniform(1, 2))
+        sign_in_btn.click()
+        
+        time.sleep(random.uniform(3, 5))
+        
+        if "feed" in driver.current_url.lower() or "home" in driver.current_url.lower():
+            logger.info("Login successful!")
+            logged_in = True
     else:
         # Manual login
         print("Please log in to LinkedIn manually...")
         try:
             WebDriverWait(driver, 300).until(lambda d: "feed" in d.current_url.lower())
             print("Login successful! Proceeding with scraping...")
-            save_cookies(driver)
         except:
             print("Login failed or took too long.")
             return False
