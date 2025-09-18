@@ -4,10 +4,13 @@ import pandas as pd
 from stages.stage_1 import scout_leads
 from stages.stage_2 import get_linkedin_profile_details
 from stages.stage_3 import evaluate_lead
+from stages.stage_message import message_lead
+# from stages.stage_enrich import enrich_contact
 import io
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import concurrent.futures
+
 
 
 # Set up supabase 
@@ -65,7 +68,7 @@ def fetch_leads_from_lead_details(limit):
 
 st.title("Dreamforce Scout App")
 
-tab1, tab2, tab3 = st.tabs(["Scout Leads", "Scrape Details", "Find Relevant Leads"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Scout Leads", "Scrape Details", "Find Relevant Leads", "Enrich Contacts", "Generate Personalised Messages"])
 
 with tab1:
     st.title("Scout Leads")
@@ -314,7 +317,7 @@ with tab3:
     num_leads = st.number_input("Enter number of leads to Search:", key="search_leads", min_value=1)
     lead_details_list = fetch_leads_from_lead_details(num_leads)
     
-    st.info(f"Found {len(lead_details_list)} leads in Supabase (sent_to_llm=False)")
+    st.info(f"Found {len(lead_details_list)} leads in Supabase to process through LLM")
     if len(lead_details_list) > 0:
         st.write("Sample leads:")
         for i, lead in enumerate(lead_details_list[:3]):  # Show first 3 leads
@@ -358,15 +361,16 @@ with tab3:
             st.error("No lead details found in Supabase.")
             st.stop()
 
-        with st.spinner("Processing leads in parallel. Please wait..."):
+        with st.spinner("Processing leads in series. Please wait..."):
             progress = st.progress(0)
             status = st.empty()
             results_placeholder = st.empty()
             outputs = []
+            total = len(lead_details_list)
+            done = 0
 
-            status.text("Started processing leads...")
-
-            def process_leads(leads, api_key, idx):
+            for acc_idx, (api_key, leads) in enumerate(zip(gemini_api_keys, leads_per_account)):
+                status.text(f"Processing leads for Gemini Account #{acc_idx+1}...")
                 account_outputs = []
                 for lead_info in leads:
                     try:
@@ -378,6 +382,8 @@ with tab3:
                             "linkedin_url": lead_info.get("profile_url"),
                             "score": 0,
                             "response": f"Error: {e}",
+                            "message_generated": None,
+                            "contacts_enriched": None,
                             "should_contact": None,
                             "input_tokens": 0,
                             "output_tokens": 0
@@ -385,47 +391,25 @@ with tab3:
                     if "lead_id" in lead_info:
                         result["lead_id"] = lead_info["lead_id"]
                     account_outputs.append(result)
-                return idx, account_outputs
-
-            # Parallel execution
-            with concurrent.futures.ThreadPoolExecutor(max_workers=num_gemini_accounts) as executor:
-                futures = [
-                    executor.submit(process_leads, leads_per_account[i], gemini_api_keys[i], i)
-                    for i in range(num_gemini_accounts)
-                ]
-                total = len(lead_details_list)
-                done = 0
-                all_results = [None] * num_gemini_accounts
-                for future in concurrent.futures.as_completed(futures):
-                    idx, account_results = future.result()
-                    all_results[idx] = account_results
-                    done += len(account_results)
-                    outputs.extend(account_results)
+                    outputs.append(result)
+                    done += 1
                     progress.progress(min(done / total, 1.0))
                     status.text(f"Completed {done} out of {total} leads...")
                     try:
                         results_placeholder.dataframe(pd.DataFrame(outputs))
                     except Exception:
                         pass
+                status.text(f"Finished Gemini Account #{acc_idx+1}")
 
-            status.text("Completed.")
+            status.text("Completed all accounts.")
 
         # Code to update database (supabase)
         for result in outputs:
             try:
-                # Insert the data in lead_details table
-                response = (
-                    supabase.table("llm_response")
-                    .insert(result)
-                    .execute()
-                )
-                # Update the scraped column in lead_details table as True
-                response = (
-                    supabase.table("lead_details")
-                    .update({"sent_to_llm": True})
-                    .eq("lead_id", result['lead_id'])
-                    .execute()
-                )
+                # Insert the data in llm_response table
+                supabase.table("llm_response").insert(result).execute()
+                # Update the sent_to_llm column in lead_details table as True
+                supabase.table("lead_details").update({"sent_to_llm": True}).eq("lead_id", result['lead_id']).execute()
             except Exception as e:
                 print(f"Error inserting data: {e}")
 
@@ -445,3 +429,150 @@ with tab3:
             st.download_button("Download Results as Excel", towrite.read(), "evaluated_leads.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         except Exception:
             pass
+
+
+
+
+
+with tab4:
+    st.header("Enrich Contacts for Relevant Leads")
+
+    st.info("This section is under development.")
+
+
+
+
+def fetch_leads_for_message_generate(limit):
+
+    # 1. Fetch llm_response where message_generated = 'no'
+    llm_responses_res = supabase.table("llm_response") \
+        .select("lead_id") \
+        .eq("message_generated", "no") \
+        .execute()
+    llm_resp_lead_id = {resp["lead_id"] for resp in (llm_responses_res.data or [])}
+
+    leads_to_generate_message = []
+    for lead_id in llm_resp_lead_id:
+        lead = (supabase.table("lead_details")
+                .select("*")
+                .eq("lead_id", lead_id)
+                .execute()         
+        )
+        leads_to_generate_message.append(lead.data[0])
+    return leads_to_generate_message
+
+
+
+with tab5:
+    st.header("Generate Personalised Messages for Relevant Leads")
+
+    num_leads = st.number_input("Enter number of leads to Search:", key="search_leads_tab5", min_value=1)
+    lead_details_list = fetch_leads_for_message_generate(num_leads)
+    
+    st.info(f"Found {len(lead_details_list)} leads in Supabase whose message is not generated")
+    if len(lead_details_list) > 0:
+        st.write("Sample leads:")
+        for i, lead in enumerate(lead_details_list[:3]):  # Show first 3 leads
+            st.write(f"{i+1}. **{lead.get('name', 'N/A')}** - {lead.get('title', 'N/A')} at {lead.get('company_name', 'N/A')}")
+        if len(lead_details_list) > 3:
+            st.write(f"... and {len(lead_details_list) - 3} more")
+    else:
+        st.warning("No lead details found in Supabase whose message is not generated.")
+
+    # --- Gemini Multi-Account Section ---
+    st.subheader("Gemini API Accounts")
+    num_gemini_accounts = st.number_input("Number of Gemini accounts to use:", min_value=1, max_value=10, value=1, step=1, key="num_gemini_accounts_tab5")
+    gemini_api_keys = []
+    for i in range(num_gemini_accounts):
+        with st.expander(f"Gemini Account #{i+1} API Key", expanded=(i == 0)):
+            api_key = st.text_input(f"Gemini API Key for Account #{i+1}", type="password", key=f"gemini_api_key_tab5_{i}")
+            gemini_api_keys.append(api_key)
+
+    # Distribute leads evenly among accounts
+    leads_per_account = [[] for _ in range(num_gemini_accounts)]
+    for idx, lead in enumerate(lead_details_list):
+        leads_per_account[idx % num_gemini_accounts].append(lead)
+
+    st.markdown("#### Sample of leads assigned to each Gemini account:")
+    for i in range(num_gemini_accounts):
+        with st.expander(f"Gemini Account #{i+1} Sample Leads", expanded=(i == 0)):
+            leads = leads_per_account[i]
+            if leads:
+                for j, lead in enumerate(leads[:3]):  # Show up to 3 sample leads per account
+                    st.write(f"{j+1}. **{lead.get('name', 'N/A')}** - {lead.get('title', 'N/A')} at {lead.get('company_name', 'N/A')}")
+                if len(leads) > 3:
+                    st.write(f"... and {len(leads) - 3} more")
+            else:
+                st.info("No leads assigned to this account.")
+
+    if st.button("Execute Generate Personalised Messages (Series)", key="execute_generate_messages_tab5"):
+        if any(not key for key in gemini_api_keys):
+            st.error("Please provide all Gemini API Keys.")
+            st.stop()
+        if len(lead_details_list) == 0:
+            st.error("No lead details found in Supabase whose message is not generated.")
+            st.stop()
+
+        with st.spinner("Processing leads in series. Please wait..."):
+            progress = st.progress(0)
+            status = st.empty()
+            results_placeholder = st.empty()
+            outputs = []
+            total = len(lead_details_list)
+            done = 0
+
+            # Sequential processing of accounts
+            for acc_idx, (api_key, leads) in enumerate(zip(gemini_api_keys, leads_per_account)):
+                status.text(f"Processing leads for Gemini Account #{acc_idx+1}...")
+                for lead_info in leads:
+                    try:
+                        result = message_lead(lead_info, api_key=api_key)
+                    except Exception as e:
+                        result = {
+                            "lead_id": lead_info.get("lead_id"),
+                            "linkedin_url": lead_info.get("profile_url"),
+                            "name": lead_info.get("name"),
+                            "subject": "",
+                            "message": f"Error: {e}"
+                        }
+                    if "lead_id" in lead_info:
+                        result["lead_id"] = lead_info["lead_id"]
+                    outputs.append(result)
+                    done += 1
+                    progress.progress(min(done / total, 1.0))
+                    status.text(f"Completed {done} out of {total} leads...")
+                    try:
+                        # Display the result immediately after processing
+                        results_placeholder.dataframe(pd.DataFrame(outputs))
+                    except Exception:
+                        st.error("Error displaying results.")
+                status.text(f"Finished Gemini Account #{acc_idx+1}")
+
+            status.text("Completed all accounts.")
+
+        # Code to update database (supabase)
+        for result in outputs:
+            try:
+                # Insert the data in message table
+                supabase.table("message").insert(result).execute()
+                # Update the message_generated column in llm_response table as True
+                supabase.table("llm_response").update({"message_generated": 'yes'}).eq("lead_id", result['lead_id']).execute()
+            except Exception as e:
+                st.error(f"Error inserting/updating data for lead_id {result.get('lead_id')}: {e}")
+
+        results_df = pd.DataFrame(outputs)
+        st.dataframe(results_df)
+
+        # CSV download
+        csv_bytes = results_df.to_csv(index=False).encode("utf-8")
+        st.download_button("Download Results as CSV", csv_bytes, "message.csv", "text/csv", key="download_csv_tab5")
+
+        # Excel download
+        try:
+            towrite = io.BytesIO()
+            with pd.ExcelWriter(towrite, engine="openpyxl") as writer:
+                results_df.to_excel(writer, index=False, sheet_name="message")
+            towrite.seek(0)
+            st.download_button("Download Results as Excel", towrite.read(), "message.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_excel_tab5")
+        except Exception:
+            st.error("Error generating Excel file.")

@@ -79,6 +79,18 @@ Should we approach this lead? Score the leads based on above rule (0-100) and ex
     # Parse the response
     parsed_output = parser.parse(response.content)
 
+
+    # Set contacts_enriched and message_generated based on score
+    if parsed_output.SCORE >= 50:
+        contacts_enriched = 'no'
+        message_generated = 'no'
+    elif parsed_output.SCORE < 50:
+        contacts_enriched = 'ineligible'
+        message_generated = 'ineligible'
+    else:
+        contacts_enriched = None
+        message_generated = None
+
     # Calculate token sizes
     input_tokens = 0
     output_tokens = 0
@@ -114,6 +126,8 @@ Should we approach this lead? Score the leads based on above rule (0-100) and ex
         "score": parsed_output.SCORE,
         "response": parsed_output.RESPONSE,
         "should_contact": parsed_output.SHOULD_CONTACT,
+        "contacts_enriched": contacts_enriched,
+        "message_generated": message_generated,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens
     }
