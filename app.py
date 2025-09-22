@@ -36,13 +36,15 @@ def fetch_lkd_account(status):
     return accounts
 
 
+
 # Load Linkedin urls from all_leads table for Stage 2 from Supabase
-def fetch_urls_from_all_leads(init_range, final_range):
+def fetch_urls_from_all_leads(init_range, final_range, tags):
     linkedin_urls = [] 
     response = (
                 supabase.table("all_leads")
                 .select("linkedin_url")
                 .eq("scraped", False)
+                .in_("tag", tags if tags else ["dreamforce post"])  # Changed filter to in_
                 .range(init_range, final_range)
                 .execute()
                 )
@@ -128,7 +130,6 @@ with tab1:
         st.download_button("Download Results as CSV", csv, "scout_leads_results.csv", "text/csv")
 
 
-
 with tab2:
     st.title("Scrape Details")
 
@@ -140,7 +141,11 @@ with tab2:
     )
 
     no_of_accounts = st.number_input("Number of LinkedIn accounts to use:", min_value=1, max_value=10, value=1, step=1, format="%d", key="no_of_accounts")
-
+    
+    tag_tab2_list = supabase.table("unique_tags").select("*").execute()
+    
+    tag_tab2 = st.multiselect("Filter leads by tag (optional):", [item['tag'] for item in tag_tab2_list.data if item['tag']], help="Select one or more tags to filter leads. Leave empty to fetch all tags.")
+    
     urls_per_account = [[] for _ in range(no_of_accounts)]  # Will hold URLs for each account
 
     if data_source == "Use LinkedIn URLs from Supabase":
@@ -150,7 +155,7 @@ with tab2:
         init_range = 0
         fin_range = num_leads + init_range - 1
 
-        all_linkedin_urls = fetch_urls_from_all_leads(init_range=init_range, final_range=fin_range)
+        all_linkedin_urls = fetch_urls_from_all_leads(init_range=init_range, final_range=fin_range, tags=tag_tab2 if tag_tab2 else ['dreamforce post'])
         if all_linkedin_urls:
             st.success(f"Found {len(all_linkedin_urls)} LinkedIn URLs in Supabase (scraped=False)")
             st.write("Sample URLs:")
@@ -310,7 +315,6 @@ with tab2:
 
 
 
-
 with tab3:
     st.header("Find Relevant Leads")
 
@@ -442,24 +446,49 @@ with tab4:
 
 
 
-def fetch_leads_for_message_generate(limit):
+# def fetch_leads_for_message_generate(limit):
 
-    # 1. Fetch llm_response where message_generated = 'no'
-    llm_responses_res = supabase.table("llm_response") \
-        .select("lead_id") \
-        .eq("message_generated", "no") \
+#     # 1. Fetch llm_response where message_generated = 'no'
+#     llm_responses_res = supabase.table("llm_response") \
+#         .select("lead_id") \
+#         .eq("message_generated", "no") \
+#         .execute()
+#     llm_resp_lead_id = {resp["lead_id"] for resp in (llm_responses_res.data or [])}
+
+#     leads_to_generate_message = []
+#     for lead_id in llm_resp_lead_id:
+#         lead = (supabase.table("lead_details")
+#                 .select("*")
+#                 .eq("lead_id", lead_id)
+#                 .execute()         
+#         )
+#         leads_to_generate_message.append(lead.data[0])
+#     return leads_to_generate_message[0:limit]
+
+
+def fetch_leads_for_message_generate(limit: int):
+    # 1. Fetch lead_ids from llm_response where message_generated = 'no'
+    llm_responses_res = (
+        supabase.table("llm_response")
+        .select("lead_id")
+        .eq("message_generated", "no")
         .execute()
-    llm_resp_lead_id = {resp["lead_id"] for resp in (llm_responses_res.data or [])}
+    )
+    llm_resp_lead_ids = [resp["lead_id"] for resp in (llm_responses_res.data or [])]
 
-    leads_to_generate_message = []
-    for lead_id in llm_resp_lead_id:
-        lead = (supabase.table("lead_details")
-                .select("*")
-                .eq("lead_id", lead_id)
-                .execute()         
-        )
-        leads_to_generate_message.append(lead.data[0])
-    return leads_to_generate_message
+    if not llm_resp_lead_ids:
+        return []
+
+    # 2. Fetch matching leads in one query
+    leads_res = (
+        supabase.table("lead_details")
+        .select("*")
+        .in_("lead_id", llm_resp_lead_ids)
+        .limit(limit)
+        .execute()
+    )
+
+    return leads_res.data or []
 
 
 
